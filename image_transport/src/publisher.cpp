@@ -43,9 +43,65 @@
 
 #include "image_transport/camera_common.hpp"
 #include "image_transport/publisher_plugin.hpp"
+#include "image_transport/type_adapted_publisher.hpp"
 
 namespace image_transport
 {
+
+namespace
+{
+
+std::set<std::string> enabledTransports(
+  rclcpp::Node * node, const std::string & image_topic, const PubLoaderPtr & loader)
+{
+  auto ns_len = node->get_effective_namespace().length();
+  std::string param_base_name = image_topic.substr(ns_len);
+  std::replace(param_base_name.begin(), param_base_name.end(), '/', '.');
+  if (param_base_name.front() == '.') {
+    param_base_name = param_base_name.substr(1);
+  }
+  std::vector<std::string> allowlist_vec;
+  std::vector<std::string> all_transport_names;
+  for (const auto & lookup_name : loader->getDeclaredClasses()) {
+    all_transport_names.emplace_back(erase_last_copy(lookup_name, "_pub"));
+  }
+  try {
+    allowlist_vec = node->declare_parameter<std::vector<std::string>>(
+      param_base_name + ".enable_pub_plugins", all_transport_names);
+  } catch (const rclcpp::exceptions::ParameterAlreadyDeclaredException &) {
+    RCLCPP_DEBUG_STREAM(
+      node->get_logger(), param_base_name << ".enable_pub_plugins" << " was previously declared"
+    );
+    allowlist_vec =
+      node->get_parameter(
+      param_base_name +
+      ".enable_pub_plugins").get_value<std::vector<std::string>>();
+  }
+  return std::set<std::string>(allowlist_vec.begin(), allowlist_vec.end());
+}
+
+std::vector<std::shared_ptr<PublisherPlugin>> advertisePlugins(
+  rclcpp::Node * node, const std::string & image_topic, const PubLoaderPtr & loader,
+  const std::set<std::string> & transports, rmw_qos_profile_t custom_qos,
+  const rclcpp::PublisherOptions & options)
+{
+  std::vector<std::shared_ptr<PublisherPlugin>> publishers;
+  for (const auto & transport_name : transports) {
+    const auto & lookup_name = transport_name + "_pub";
+    try {
+      auto pub = loader->createUniqueInstance(lookup_name);
+      pub->advertise(node, image_topic, custom_qos, options);
+      publishers.push_back(std::move(pub));
+    } catch (const std::runtime_error & e) {
+      RCLCPP_ERROR(
+        node->get_logger(), "Failed to load plugin %s, error string: %s\n",
+        lookup_name.c_str(), e.what());
+    }
+  }
+  return publishers;
+}
+
+}  // namespace
 
 struct Publisher::Impl
 {
@@ -110,47 +166,8 @@ Publisher::Publisher(
     node->get_name(), node->get_namespace());
   impl_->base_topic_ = image_topic;
   impl_->loader_ = loader;
-
-  auto ns_len = node->get_effective_namespace().length();
-  std::string param_base_name = image_topic.substr(ns_len);
-  std::replace(param_base_name.begin(), param_base_name.end(), '/', '.');
-  if (param_base_name.front() == '.') {
-    param_base_name = param_base_name.substr(1);
-  }
-  std::vector<std::string> allowlist_vec;
-  std::set<std::string> allowlist;
-  std::vector<std::string> all_transport_names;
-  for (const auto & lookup_name : loader->getDeclaredClasses()) {
-    all_transport_names.emplace_back(erase_last_copy(lookup_name, "_pub"));
-  }
-  try {
-    allowlist_vec = node->declare_parameter<std::vector<std::string>>(
-      param_base_name + ".enable_pub_plugins", all_transport_names);
-  } catch (const rclcpp::exceptions::ParameterAlreadyDeclaredException &) {
-    RCLCPP_DEBUG_STREAM(
-      node->get_logger(), param_base_name << ".enable_pub_plugins" << " was previously declared"
-    );
-    allowlist_vec =
-      node->get_parameter(
-      param_base_name +
-      ".enable_pub_plugins").get_value<std::vector<std::string>>();
-  }
-  for (size_t i = 0; i < allowlist_vec.size(); ++i) {
-    allowlist.insert(allowlist_vec[i]);
-  }
-
-  for (const auto & transport_name : allowlist) {
-    const auto & lookup_name = transport_name + "_pub";
-    try {
-      auto pub = loader->createUniqueInstance(lookup_name);
-      pub->advertise(node, image_topic, custom_qos, options);
-      impl_->publishers_.push_back(std::move(pub));
-    } catch (const std::runtime_error & e) {
-      RCLCPP_ERROR(
-        impl_->logger_, "Failed to load plugin %s, error string: %s\n",
-        lookup_name.c_str(), e.what());
-    }
-  }
+  impl_->publishers_ = advertisePlugins(
+    node, image_topic, loader, enabledTransports(node, image_topic, loader), custom_qos, options);
 
   if (impl_->publishers_.empty()) {
     throw Exception(
@@ -245,5 +262,64 @@ Publisher::operator void *() const
 {
   return (impl_ && impl_->isValid()) ? reinterpret_cast<void *>(1) : reinterpret_cast<void *>(0);
 }
+
+namespace detail
+{
+
+struct PluginPublishers::Impl
+{
+  PubLoaderPtr loader_;
+  std::vector<std::shared_ptr<PublisherPlugin>> publishers_;
+  bool raw_enabled_;
+};
+
+PluginPublishers::PluginPublishers(
+  rclcpp::Node * node, const std::string & image_topic, PubLoaderPtr loader,
+  rmw_qos_profile_t custom_qos, rclcpp::PublisherOptions options)
+: impl_(std::make_unique<Impl>())
+{
+  auto transports = enabledTransports(node, image_topic, loader);
+  impl_->raw_enabled_ = transports.erase("image_transport/raw") > 0;
+  impl_->publishers_ = advertisePlugins(node, image_topic, loader, transports, custom_qos, options);
+  impl_->loader_ = std::move(loader);
+}
+
+PluginPublishers::~PluginPublishers()
+{
+  shutdown();
+}
+
+bool PluginPublishers::rawEnabled() const
+{
+  return impl_->raw_enabled_;
+}
+
+size_t PluginPublishers::getNumSubscribers() const
+{
+  size_t count = 0;
+  for (const auto & pub : impl_->publishers_) {
+    count += pub->getNumSubscribers();
+  }
+  return count;
+}
+
+void PluginPublishers::publish(const sensor_msgs::msg::Image::ConstSharedPtr & message) const
+{
+  for (const auto & pub : impl_->publishers_) {
+    if (pub->getNumSubscribers() > 0) {
+      pub->publishPtr(message);
+    }
+  }
+}
+
+void PluginPublishers::shutdown()
+{
+  for (auto & pub : impl_->publishers_) {
+    pub->shutdown();
+  }
+  impl_->publishers_.clear();
+}
+
+}  // namespace detail
 
 }  // namespace image_transport

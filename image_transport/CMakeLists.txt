@@ -151,6 +151,11 @@ if(BUILD_TESTING)
     target_link_libraries(${PROJECT_NAME}-qos_override ${PROJECT_NAME})
   endif()
 
+  ament_add_gtest(${PROJECT_NAME}-type_adapted_publisher test/test_type_adapted_publisher.cpp)
+  if(TARGET ${PROJECT_NAME}-type_adapted_publisher)
+    target_link_libraries(${PROJECT_NAME}-type_adapted_publisher ${PROJECT_NAME})
+  endif()
+
   ament_add_gtest(${PROJECT_NAME}-single_subscriber_publisher test/test_single_subscriber_publisher.cpp)
   if(TARGET ${PROJECT_NAME}-single_subscriber_publisher)
     target_link_libraries(${PROJECT_NAME}-single_subscriber_publisher ${PROJECT_NAME})

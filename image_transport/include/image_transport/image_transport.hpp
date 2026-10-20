@@ -32,6 +32,7 @@
 #include <functional>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "rclcpp/node.hpp"
@@ -41,6 +42,7 @@
 #include "image_transport/publisher.hpp"
 #include "image_transport/subscriber.hpp"
 #include "image_transport/transport_hints.hpp"
+#include "image_transport/type_adapted_publisher.hpp"
 #include "image_transport/visibility_control.hpp"
 
 namespace image_transport
@@ -55,6 +57,35 @@ Publisher create_publisher(
   const std::string & base_topic,
   rmw_qos_profile_t custom_qos = rmw_qos_profile_default,
   rclcpp::PublisherOptions options = rclcpp::PublisherOptions());
+
+/*!
+ * \brief Advertise an image topic that publishes a type adapted image, free function version.
+ */
+template<typename AdapterT>
+TypeAdaptedPublisher<AdapterT> create_type_adapted_publisher(
+  rclcpp::Node * node,
+  const std::string & base_topic,
+  rmw_qos_profile_t custom_qos = rmw_qos_profile_default,
+  rclcpp::PublisherOptions options = rclcpp::PublisherOptions())
+{
+  return TypeAdaptedPublisher<AdapterT>(node, base_topic, custom_qos, options);
+}
+
+/**
+ * \brief Subscribe to the raw transport of an image topic with a type adapted callback.
+ */
+template<typename AdapterT, typename CallbackT>
+typename rclcpp::Subscription<AdapterT>::SharedPtr create_type_adapted_subscription(
+  rclcpp::Node * node,
+  const std::string & base_topic,
+  CallbackT && callback,
+  rmw_qos_profile_t custom_qos = rmw_qos_profile_default,
+  rclcpp::SubscriptionOptions options = rclcpp::SubscriptionOptions())
+{
+  auto qos = rclcpp::QoS(rclcpp::QoSInitialization::from_rmw(custom_qos), custom_qos);
+  return node->create_subscription<AdapterT>(
+    base_topic, qos, std::forward<CallbackT>(callback), options);
+}
 
 /**
  * \brief Subscribe to an image topic, free function version.

@@ -65,6 +65,21 @@ Publisher create_publisher(
   return Publisher(node, base_topic, kImpl->pub_loader_, custom_qos, options);
 }
 
+namespace detail
+{
+
+std::shared_ptr<PluginPublishers> createPluginPublishers(
+  rclcpp::Node * node,
+  const std::string & image_topic,
+  rmw_qos_profile_t custom_qos,
+  rclcpp::PublisherOptions options)
+{
+  return std::make_shared<PluginPublishers>(
+    node, image_topic, kImpl->pub_loader_, custom_qos, options);
+}
+
+}  // namespace detail
+
 Subscriber create_subscription(
   rclcpp::Node * node,
   const std::string & base_topic,
