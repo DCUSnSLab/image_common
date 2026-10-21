@@ -42,6 +42,7 @@
 #include "image_transport/publisher.hpp"
 #include "image_transport/subscriber.hpp"
 #include "image_transport/transport_hints.hpp"
+#include "image_transport/type_adapted_camera_publisher.hpp"
 #include "image_transport/type_adapted_publisher.hpp"
 #include "image_transport/visibility_control.hpp"
 
@@ -69,6 +70,19 @@ TypeAdaptedPublisher<AdapterT> create_type_adapted_publisher(
   rclcpp::PublisherOptions options = rclcpp::PublisherOptions())
 {
   return TypeAdaptedPublisher<AdapterT>(node, base_topic, custom_qos, options);
+}
+
+/*!
+ * \brief Advertise a camera with a type adapted image, free function version.
+ */
+template<typename AdapterT>
+TypeAdaptedCameraPublisher<AdapterT> create_type_adapted_camera_publisher(
+  rclcpp::Node * node,
+  const std::string & base_topic,
+  rmw_qos_profile_t custom_qos = rmw_qos_profile_default,
+  rclcpp::PublisherOptions options = rclcpp::PublisherOptions())
+{
+  return TypeAdaptedCameraPublisher<AdapterT>(node, base_topic, custom_qos, options);
 }
 
 /**

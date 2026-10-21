@@ -34,6 +34,8 @@
 #include <type_traits>
 #include <utility>
 
+#include "rcl/intra_process.h"
+#include "rclcpp/exceptions.hpp"
 #include "rclcpp/expand_topic_or_service_name.hpp"
 #include "rclcpp/logging.hpp"
 #include "rclcpp/node.hpp"
@@ -109,6 +111,13 @@ public:
     std::unique_ptr<PublishedType, PublishedTypeDeleter> msg,
     const std::shared_ptr<const ROSMessageType> & ros_msg)
   {
+    if constexpr (std::is_same_v<PublishedTypeDeleter, std::default_delete<PublishedType>>) {
+      if (rcl_publisher_is_ipc_enabled(this->publisher_handle_.get())) {
+        this->do_ipc_adapted_publish(
+          std::move(msg), std::const_pointer_cast<ROSMessageType>(ros_msg));
+        return;
+      }
+    }
     if (!this->intra_process_is_enabled_) {
       this->do_inter_process_publish(*ros_msg);
       return;
@@ -129,6 +138,18 @@ public:
     const PublishedType & msg,
     const std::shared_ptr<const ROSMessageType> & ros_msg)
   {
+    if (rcl_publisher_is_ipc_enabled(this->publisher_handle_.get())) {
+      // Readers in this process share the conversion instead of a copy of msg.
+      using Owner = std::shared_ptr<const ROSMessageType>;
+      auto owner = new Owner(ros_msg);
+      auto ret = rcl_publish_ipc_owned(
+        this->publisher_handle_.get(), owner->get(),
+        [](void * value) {delete static_cast<Owner *>(value);}, owner);
+      if (ret != RCL_RET_OK) {
+        rclcpp::exceptions::throw_from_rcl_error(ret, "failed to publish message");
+      }
+      return;
+    }
     if (!this->intra_process_is_enabled_) {
       this->do_inter_process_publish(*ros_msg);
       return;

@@ -228,3 +228,77 @@ TEST_F(TypeAdaptedPublisherTest, shutdown_unadvertises_every_copy)
   copy.publish(make_image());
   EXPECT_EQ(conversions_to_ros, 0);
 }
+
+TEST_F(TypeAdaptedPublisherTest, camera_publisher_pairs_adapted_image_with_info)
+{
+  auto pub_node = std::make_shared<rclcpp::Node>(
+    "adapted_camera", rclcpp::NodeOptions().use_intra_process_comms(true));
+  auto ext_node = std::make_shared<rclcpp::Node>("camera_sub");
+  auto pub = image_transport::create_type_adapted_camera_publisher<Adapter>(
+    pub_node.get(), "camera/image_cam");
+  EXPECT_EQ(pub.getTopic(), "/camera/image_cam");
+  EXPECT_EQ(pub.getInfoTopic(), "/camera/camera_info");
+
+  std::unique_ptr<AdaptedImage> intra_received;
+  auto intra_sub = image_transport::create_type_adapted_subscription<Adapter>(
+    pub_node.get(), "camera/image_cam",
+    [&intra_received](std::unique_ptr<AdaptedImage> msg) {intra_received = std::move(msg);});
+  sensor_msgs::msg::Image::ConstSharedPtr image_received;
+  sensor_msgs::msg::CameraInfo::ConstSharedPtr info_received;
+  auto camera_sub = image_transport::create_camera_subscription(
+    ext_node.get(), "camera/image_cam",
+    [&](const sensor_msgs::msg::Image::ConstSharedPtr & image,
+    const sensor_msgs::msg::CameraInfo::ConstSharedPtr & info) {
+      image_received = image;
+      info_received = info;
+    }, "raw");
+
+  rclcpp::executors::SingleThreadedExecutor executor;
+  executor.add_node(pub_node);
+  executor.add_node(ext_node);
+  ASSERT_TRUE(spin_until(executor, [&pub]() {return pub.getNumSubscribers() == 2u;}));
+
+  auto image = make_image();
+  const AdaptedImage * published = image.get();
+  auto info = std::make_unique<sensor_msgs::msg::CameraInfo>();
+  info->header.frame_id = "camera";
+  info->width = 4;
+  pub.publish(std::move(image), std::move(info));
+  ASSERT_TRUE(
+    spin_until(
+      executor, [&]() {return intra_received != nullptr && image_received != nullptr;}));
+  EXPECT_EQ(intra_received.get(), published);
+  EXPECT_EQ(conversions_to_ros, 1);
+  EXPECT_EQ(image_received->data, make_image()->pixels);
+  ASSERT_NE(info_received, nullptr);
+  EXPECT_EQ(info_received->width, 4u);
+}
+
+TEST_F(TypeAdaptedPublisherTest, raw_and_plugin_subscribers_in_one_process_share_one_conversion)
+{
+  auto node = std::make_shared<rclcpp::Node>("adapted_with_plugin");
+  auto pub = image_transport::create_type_adapted_publisher<Adapter>(
+    node.get(), "camera/image_plugin");
+  std::unique_ptr<AdaptedImage> raw_received;
+  auto raw_sub = image_transport::create_type_adapted_subscription<Adapter>(
+    node.get(), "camera/image_plugin",
+    [&raw_received](std::unique_ptr<AdaptedImage> msg) {raw_received = std::move(msg);});
+  sensor_msgs::msg::Image::ConstSharedPtr plugin_received;
+  auto plugin_sub = image_transport::create_subscription(
+    node.get(), "camera/image_plugin",
+    [&plugin_received](const sensor_msgs::msg::Image::ConstSharedPtr & msg) {
+      plugin_received = msg;
+    }, "compressed");
+
+  rclcpp::executors::SingleThreadedExecutor executor;
+  executor.add_node(node);
+  ASSERT_TRUE(spin_until(executor, [&pub]() {return pub.getNumSubscribers() == 2u;}));
+
+  pub.publish(make_image());
+  ASSERT_TRUE(
+    spin_until(
+      executor, [&]() {return raw_received != nullptr && plugin_received != nullptr;}));
+  EXPECT_EQ(raw_received->pixels, make_image()->pixels);
+  EXPECT_EQ(plugin_received->header.frame_id, "camera");
+  EXPECT_EQ(conversions_to_ros, 1);
+}
